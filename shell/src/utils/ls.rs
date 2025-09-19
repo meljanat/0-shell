@@ -55,6 +55,7 @@ pub fn ls(input: &[&str]) {
         desired_paths.push(".");
     }
 
+    
     for cur_path in &desired_paths {
         if desired_paths.len() > 1 {
             println!("{}:", cur_path);
