@@ -27,12 +27,6 @@ fn format_permissions(metadata: &Metadata) -> String {
     let mut perms = String::new();
     perms.push(file_type);
 
-    // for i in (0..3).rev() {
-    //     let shift = i * 3;
-    //     perms.push(if (mode >> (shift + 2)) & 1 == 1 { 'r' } else { '-' });
-    //     perms.push(if (mode >> (shift + 1)) & 1 == 1 { 'w' } else { '-' });
-    //     perms.push(if (mode >> (shift + 0)) & 1 == 1 { 'x' } else { '-' });
-    // }
     let flags = ['x', 'w', 'r'];
     for i in (0..9).rev() {
         if (mode >> i) & 1 == 1 {

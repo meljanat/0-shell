@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 chrono = "0.4.42"
+posix-acl = "1.2.0"
 users = "0.11.0"

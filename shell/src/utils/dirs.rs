@@ -1,5 +1,5 @@
 pub fn cd(input: &[&str]) {
-    let target_dir = if input.is_empty() {
+    let target_dir = if input.is_empty() || input[0] == "~" {
         std::env::var("HOME").unwrap_or_else(|_| String::from("/"))
     } else {
         input[0].to_string()
@@ -11,6 +11,10 @@ pub fn cd(input: &[&str]) {
 }
 
 pub fn mkdir(input: &[&str]) {
+    if input.is_empty() {
+        eprintln!("mkdir: missing operand");
+        return;
+    }
     for &dir in input {
         if let Err(e) = std::fs::create_dir(dir) {
             eprintln!("mkdir: cannot create directory ‘{}’: {}", dir, e);

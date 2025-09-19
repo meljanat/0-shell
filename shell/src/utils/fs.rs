@@ -1,6 +1,10 @@
 pub fn cp(input: &[&str]) {
-    if input.len() < 2 {
+    if input.is_empty() {
         eprintln!("cp: missing file operand");
+        return;
+    }
+    if input.len() < 2 {
+        eprintln!("cp: missing destination file operand after '{}'", input[0]);
         return;
     }
 
@@ -21,7 +25,7 @@ pub fn rm(input: &[&str]) {
         return;
     }
 
-    let flag_r = input[0] == "-r";
+    let flag_r = input[0].to_lowercase() == "-r" || input[0] == "-rf" || input[0] == "-fr";
     let paths: Vec<&str> = if flag_r {
         input[1..].to_vec()
     } else {
@@ -42,8 +46,12 @@ pub fn rm(input: &[&str]) {
 }
 
 pub fn mv(input: &[&str]) {
-    if input.len() < 2 {
+    if input.is_empty() {
         eprintln!("mv: missing file operand");
+        return;
+    }
+    if input.len() < 2 {
+        eprintln!("mv: missing destination file operand after '{}'", input[0]);
         return;
     }
 

@@ -86,13 +86,33 @@ pub fn pwd() {
 
 pub fn cat(input: &[&str]) {
     if input.is_empty() {
-        return;
+        let mut input = String::new();
+        loop {
+            if io::stdin().read_line(&mut input).unwrap() == 0 {
+                break;
+            }
+            print!("{}", input);
+            input.clear();
+        }
     }
 
     for &file in input {
         match std::fs::read_to_string(file) {
             Ok(content) => print!("{}", content),
-            Err(e) => eprintln!("cat: {}: {}", file, e),
+            Err(e) => {
+                if file == "-" {
+                    let mut input = String::new();
+                    loop {
+                        if io::stdin().read_line(&mut input).unwrap() == 0 {
+                            break;
+                        }
+                        print!("{}", input);
+                        input.clear();
+                    }
+                } else {
+                    eprintln!("cat: {}: {}", file, e);
+                }
+            }
         }
     }
 }
