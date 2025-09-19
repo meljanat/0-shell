@@ -9,12 +9,10 @@ fn main() {
 
         let mut input = String::new();
         if io::stdin().read_line(&mut input).unwrap() == 0 {
+            println!("\nexit");
             break;
         }
         let input = input.trim();
-        if input == "exit" {
-            break;
-        }
 
         let args = input.split_whitespace().collect::<Vec<&str>>();
         if args.is_empty() {
@@ -33,7 +31,10 @@ fn main() {
             "rm" => rm(args),
             "mv" => mv(args),
             "mkdir" => mkdir(args),
-            "exit" => break,
+            "exit" => {
+                print!("exit\n");
+                break;
+            },
             _ => println!("Command '{}' not found", cmd),
         }
     }
