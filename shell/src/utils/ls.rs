@@ -1,7 +1,7 @@
 use chrono::{DateTime, Local};
 use std::ffi::OsString;
-use std::fs::{self, DirEntry, Metadata};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::fs::{self, DirEntry, Metadata, read_link};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, FileTypeExt};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use users::{get_group_by_gid, get_user_by_uid};
@@ -12,6 +12,14 @@ fn format_permissions(metadata: &Metadata) -> String {
         'd'
     } else if metadata.file_type().is_symlink() {
         'l'
+    } else if metadata.file_type().is_fifo() {
+        'p'
+    } else if metadata.file_type().is_socket() {
+        's'
+    } else if metadata.file_type().is_block_device() {
+        'b'
+    } else if metadata.file_type().is_char_device() {
+        'c'
     } else {
         '-'
     };
@@ -19,6 +27,12 @@ fn format_permissions(metadata: &Metadata) -> String {
     let mut perms = String::new();
     perms.push(file_type);
 
+    // for i in (0..3).rev() {
+    //     let shift = i * 3;
+    //     perms.push(if (mode >> (shift + 2)) & 1 == 1 { 'r' } else { '-' });
+    //     perms.push(if (mode >> (shift + 1)) & 1 == 1 { 'w' } else { '-' });
+    //     perms.push(if (mode >> (shift + 0)) & 1 == 1 { 'x' } else { '-' });
+    // }
     let flags = ['x', 'w', 'r'];
     for i in (0..9).rev() {
         if (mode >> i) & 1 == 1 {
@@ -35,6 +49,23 @@ fn format_time(mtime: SystemTime) -> String {
     datetime.format("%b %e %H:%M").to_string()
 }
 
+fn ls_suffix(metadata: &Metadata, _path: &PathBuf) -> char {
+    let ft = metadata.file_type();
+    if ft.is_dir() {
+        '/'
+    } else if ft.is_symlink() {
+        '@'
+    } else if ft.is_fifo() {
+        '|'
+    } else if ft.is_socket() {
+        '='
+    } else if metadata.permissions().mode() & 0o111 != 0 {
+        '*'
+    } else {
+        '\0'
+    }
+}
+
 struct LsEntry {
     perms: String,
     nlink: usize,
@@ -43,6 +74,7 @@ struct LsEntry {
     size: u64,
     mtime_str: String,
     name: String,
+    symlink_target: Option<String>,
 }
 
 pub fn ls(input: &[&str]) {
@@ -65,8 +97,9 @@ pub fn ls(input: &[&str]) {
         desired_paths.push(".");
     }
 
-    for cur_path in &desired_paths {
+    for (i, cur_path) in desired_paths.iter().enumerate() {
         if desired_paths.len() > 1 {
+            if i > 0 { println!(); }
             println!("{}:", cur_path);
         }
 
@@ -81,8 +114,8 @@ pub fn ls(input: &[&str]) {
         let mut visible_entries: Vec<(PathBuf, OsString)> = vec![];
 
         if flag_a {
-            visible_entries.push((PathBuf::from("."), OsString::from(".")));
-            visible_entries.push((PathBuf::from(".."), OsString::from("..")));
+            visible_entries.push((PathBuf::from(cur_path).join("."), OsString::from(".")));
+            visible_entries.push((PathBuf::from(cur_path).join(".."), OsString::from("..")));
         }
 
         for entry in entries {
@@ -93,10 +126,8 @@ pub fn ls(input: &[&str]) {
             visible_entries.push((entry.path(), name));
         }
 
-        if !flag_f {
-            visible_entries.sort_by_key(|(_, name)| name.clone());
-        }
-
+        visible_entries.sort_by_key(|(_, name)| name.clone());
+        
         if flag_l {
             let total_blocks: u64 = visible_entries
                 .iter()
@@ -107,43 +138,52 @@ pub fn ls(input: &[&str]) {
 
             let mut entries_info = Vec::new();
 
-            for (path, name) in visible_entries {
-                if let Ok(metadata) = fs::symlink_metadata(&path) {
-                    let perms = format_permissions(&metadata);
-                    let nlink = metadata.nlink();
-                    let user = get_user_by_uid(metadata.uid())
-                        .and_then(|u| u.name().to_str().map(|s| s.to_string()))
-                        .unwrap_or_else(|| metadata.uid().to_string());
-                    let group = get_group_by_gid(metadata.gid())
-                        .and_then(|g| g.name().to_str().map(|s| s.to_string()))
-                        .unwrap_or_else(|| metadata.gid().to_string());
-                    let size = metadata.len();
-                    let mtime = metadata.modified().unwrap_or(UNIX_EPOCH);
-                    let mtime_str = format_time(mtime);
+            for (path, name) in &visible_entries {
+                match fs::symlink_metadata(path) {
+                    Ok(metadata) => {
+                        let perms = format_permissions(&metadata);
+                        let nlink = metadata.nlink();
+                        let user = get_user_by_uid(metadata.uid())
+                            .and_then(|u| u.name().to_str().map(|s| s.to_string()))
+                            .unwrap_or_else(|| metadata.uid().to_string());
+                        let group = get_group_by_gid(metadata.gid())
+                            .and_then(|g| g.name().to_str().map(|s| s.to_string()))
+                            .unwrap_or_else(|| metadata.gid().to_string());
+                        let size = metadata.len();
+                        let mtime = metadata.modified().unwrap_or(UNIX_EPOCH);
+                        let mtime_str = format_time(mtime);
 
-                    let mut name_out = name.to_string_lossy().to_string();
-                    if flag_f {
-                        if metadata.is_dir() {
-                            name_out.push('/');
-                        } else if metadata.file_type().is_symlink() {
-                            name_out.push('@');
-                        } else if metadata.permissions().mode() & 0o111 != 0 {
-                            name_out.push('*');
+                        let mut name_out = name.to_string_lossy().to_string();
+                        let mut symlink_target = None;
+                        if metadata.file_type().is_symlink() {
+                            if let Ok(target) = read_link(path) {
+                                symlink_target = Some(target.to_string_lossy().to_string());
+                            }
                         }
-                    }
-                    if name_out.contains(' ') {
-                        name_out = format!("'{}'", name_out);
-                    }
+                        if flag_f {
+                            let suffix = ls_suffix(&metadata, path);
+                            if suffix != '\0' {
+                                name_out.push(suffix);
+                            }
+                        }
+                        if name_out.contains(' ') {
+                            name_out = format!("'{}'", name_out);
+                        }
 
-                    entries_info.push(LsEntry {
-                        perms,
-                        nlink: nlink.try_into().unwrap(),
-                        user,
-                        group,
-                        size,
-                        mtime_str,
-                        name: name_out,
-                    });
+                        entries_info.push(LsEntry {
+                            perms,
+                            nlink: nlink.try_into().unwrap(),
+                            user,
+                            group,
+                            size,
+                            mtime_str,
+                            name: name_out,
+                            symlink_target,
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("ls: cannot access {}: {}", name.to_string_lossy(), e);
+                    }
                 }
             }
 
@@ -154,39 +194,57 @@ pub fn ls(input: &[&str]) {
             let size_width = entries_info.iter().map(|e| e.size.to_string().len()).max().unwrap_or(0);
 
             for e in entries_info {
-                println!(
-                    "{:<perms_width$} {:>nlink_width$} {:<user_width$} {:<group_width$} {:>size_width$} {} {}",
-                    e.perms,
-                    e.nlink,
-                    e.user,
-                    e.group,
-                    e.size,
-                    e.mtime_str,
-                    e.name,
-                    perms_width = perms_width,
-                    nlink_width = nlink_width,
-                    user_width = user_width,
-                    group_width = group_width,
-                    size_width = size_width,
-                );
+                if let Some(target) = e.symlink_target {
+                    println!(
+                        "{:<perms_width$} {:>nlink_width$} {:<user_width$} {:<group_width$} {:>size_width$} {} {} -> {}",
+                        e.perms,
+                        e.nlink,
+                        e.user,
+                        e.group,
+                        e.size,
+                        e.mtime_str,
+                        e.name,
+                        target,
+                        perms_width = perms_width,
+                        nlink_width = nlink_width,
+                        user_width = user_width,
+                        group_width = group_width,
+                        size_width = size_width,
+                    );
+                } else {
+                    println!(
+                        "{:<perms_width$} {:>nlink_width$} {:<user_width$} {:<group_width$} {:>size_width$} {} {}",
+                        e.perms,
+                        e.nlink,
+                        e.user,
+                        e.group,
+                        e.size,
+                        e.mtime_str,
+                        e.name,
+                        perms_width = perms_width,
+                        nlink_width = nlink_width,
+                        user_width = user_width,
+                        group_width = group_width,
+                        size_width = size_width,
+                    );
+                }
             }
         } else {
-            for (path, name) in visible_entries {
-                match fs::symlink_metadata(&path) {
+            for (path, name) in &visible_entries {
+                match fs::symlink_metadata(path) {
                     Ok(metadata) => {
                         let mut name_out = name.to_string_lossy().to_string();
                         if flag_f {
-                            if metadata.is_dir() {
-                                name_out.push('/');
-                            } else if metadata.file_type().is_symlink() {
-                                name_out.push('@');
-                            } else if metadata.permissions().mode() & 0o111 != 0 {
-                                name_out.push('*');
+                            let suffix = ls_suffix(&metadata, path);
+                            if suffix != '\0' {
+                                name_out.push(suffix);
                             }
                         }
                         print!("{}  ", name_out);
                     }
-                    Err(_) => continue,
+                    Err(e) => {
+                        eprint!("ls: cannot access {}: {}  ", name.to_string_lossy(), e);
+                    }
                 }
             }
             println!();
