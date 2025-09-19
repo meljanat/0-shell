@@ -3,7 +3,26 @@ use std::io::{self, Write};
 pub fn echo(input: &[&str]) {
     let initial = input.join(" ");
 
-    if normal(&initial, ' ') {
+    if initial.chars().last() == Some('\\') {
+        let mut result = initial.trim_end_matches('\\').to_string();
+        loop {
+            print!("> ");
+            io::stdout().flush().unwrap();
+
+            let mut extra = String::new();
+            if io::stdin().read_line(&mut extra).unwrap() == 0 {
+                break;
+            }
+
+            if extra.trim_end().ends_with('\\') {
+                result.push_str(extra.trim_end_matches('\\').trim_end());
+            } else {
+                result.push_str(extra.trim_end());
+                break;
+            }
+        }
+        println!("{}", skip_quotes(&result));
+    } else if normal(&initial, ' ') {
         println!("{}", skip_quotes(&initial));
     } else {
         let mut result = initial.clone();
@@ -32,12 +51,22 @@ pub fn echo(input: &[&str]) {
 
 fn normal(input: &str, qt: char) -> bool {
     let mut quote: char = qt;
-    for c in input.chars() {
+    for (i, c) in input.chars().enumerate() {
         if c == '"' || c == '\'' {
-            if quote == ' ' {
-                quote = c;
-            } else if quote == c {
-                quote = ' ';
+            if i == 0 || i == input.len() - 1 {
+                if quote == ' ' {
+                    quote = c;
+                } else if quote == c {
+                    quote = ' ';
+                }
+            } else {
+                if input.chars().nth(i - 1) != Some('\\') {
+                    if quote == ' ' {
+                        quote = c;
+                    } else if quote == c {
+                        quote = ' ';
+                    }
+                }
             }
         }
     }
@@ -47,14 +76,29 @@ fn normal(input: &str, qt: char) -> bool {
 fn skip_quotes(input: &str) -> String {
     let mut result = String::new();
     let mut quote: char = ' ';
-    for c in input.chars() {
+    for (i, c) in input.chars().enumerate() {
+        if c == '\\' {
+            continue;
+        }
         if c == '"' || c == '\'' {
-            if quote == ' ' {
-                quote = c;
-            } else if quote == c {
-                quote = ' ';
+            if i == 0 || i == input.len() - 1 {
+                if quote == ' ' {
+                    quote = c;
+                } else if quote == c {
+                    quote = ' ';
+                } else {
+                    result.push(c);
+                }
             } else {
-                result.push(c);
+                if input.chars().nth(i - 1) != Some('\\') {
+                    if quote == ' ' {
+                        quote = c;
+                    } else if quote == c {
+                        quote = ' ';
+                    }
+                } else {
+                    result.push(c);
+                }
             }
         } else {
             result.push(c);
@@ -65,12 +109,22 @@ fn skip_quotes(input: &str) -> String {
 
 fn which_quotes(input: &str) -> char {
     let mut quote: char = ' ';
-    for c in input.chars() {
+    for (i, c) in input.chars().enumerate() {
         if c == '"' || c == '\'' {
-            if quote == ' ' {
-                quote = c;
-            } else if quote == c {
-                quote = ' ';
+            if i == 0 || i == input.len() - 1 {
+                if quote == ' ' {
+                    quote = c;
+                } else if quote == c {
+                    quote = ' ';
+                }
+            } else {
+                if input.chars().nth(i - 1) != Some('\\') {
+                    if quote == ' ' {
+                        quote = c;
+                    } else if quote == c {
+                        quote = ' ';
+                    }
+                }
             }
         }
     }
