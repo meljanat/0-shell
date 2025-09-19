@@ -1,6 +1,6 @@
-use std::fs::{self, Metadata};
-use std::os::unix::fs::PermissionsExt;
 use chrono::Local;
+use std::fs::{self, Metadata};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 pub fn ls(input: &[&str]) {
     let mut flag_l = false;
@@ -27,20 +27,35 @@ pub fn ls(input: &[&str]) {
             println!("{}:", cur_path);
         }
 
-        let mut entries: Vec<_> = match fs::read_dir(cur_path) {
-            Ok(read) => read.filter_map(Result::ok).collect(),
+        let mut entries: Vec<std::path::PathBuf> = match fs::read_dir(cur_path) {
+            Ok(read) => read.filter_map(|e| e.ok().map(|d| d.path())).collect(),
             Err(e) => {
                 eprintln!("ls: cannot access {}: {}", cur_path, e);
                 continue;
             }
         };
 
-        if !flag_f {
-            entries.sort_by_key(|dir| dir.path());
+        if flag_a {
+            entries.push(std::path::Path::new(cur_path).join("."));
+            entries.push(std::path::Path::new(cur_path).join(".."));
         }
 
+        if flag_l {
+            let mut total: u64 = 0;
+            for entry in entries.iter() {
+                let meta = entry.metadata().unwrap();
+                total += meta.blocks();
+            }
+            println!("total {}", total / 2);
+        }
+
+        if !flag_f {
+            entries.sort();
+        }
+
+        println!("entries {:?}", entries);
         for entry in entries {
-            let file_name = entry.file_name();
+            let file_name = entry.file_name().unwrap_or_default();
             let file_name_str = file_name.to_string_lossy();
 
             if !flag_a && file_name_str.starts_with('.') {
@@ -53,6 +68,13 @@ pub fn ls(input: &[&str]) {
             };
 
             let mut name_out = file_name_str.to_string();
+            let username = users::get_user_by_uid(metadata.uid())
+                .and_then(|u| u.name().to_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| metadata.uid().to_string());
+            let groupname = users::get_group_by_gid(metadata.gid())
+                .and_then(|g| g.name().to_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| metadata.gid().to_string());
+            let nlink = metadata.nlink();
 
             if flag_f {
                 let ft = metadata.file_type();
@@ -72,8 +94,11 @@ pub fn ls(input: &[&str]) {
                 let datetime: chrono::DateTime<Local> = modified.into();
 
                 println!(
-                    "{} {:>8} {} {}",
+                    "{} {} {} {} {} {} {}",
                     perms,
+                    nlink,
+                    username,
+                    groupname,
                     size,
                     datetime.format("%b %d %H:%M"),
                     name_out
