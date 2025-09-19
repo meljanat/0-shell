@@ -1,6 +1,39 @@
-use chrono::Local;
-use std::fs::{self, Metadata};
+use chrono::{DateTime, Local};
+use std::ffi::OsString;
+use std::fs::{self, DirEntry, Metadata};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+use users::{get_group_by_gid, get_user_by_uid};
+
+fn format_permissions(metadata: &Metadata) -> String {
+    let mode = metadata.permissions().mode();
+    let file_type = if metadata.is_dir() {
+        'd'
+    } else if metadata.file_type().is_symlink() {
+        'l'
+    } else {
+        '-'
+    };
+
+    let mut perms = String::new();
+    perms.push(file_type);
+
+    let flags = ['r', 'w', 'x'];
+    for i in (0..9).rev() {
+        if (mode >> i) & 1 == 1 {
+            perms.push(flags[i % 3]);
+        } else {
+            perms.push('-');
+        }
+    }
+    perms
+}
+
+fn format_time(mtime: SystemTime) -> String {
+    let datetime: DateTime<Local> = DateTime::from(mtime);
+    datetime.format("%b %e %H:%M").to_string()
+}
 
 pub fn ls(input: &[&str]) {
     let mut flag_l = false;
@@ -27,84 +60,62 @@ pub fn ls(input: &[&str]) {
             println!("{}:", cur_path);
         }
 
-        let mut entries: Vec<std::path::PathBuf> = match fs::read_dir(cur_path) {
-            Ok(read) => read.filter_map(|e| e.ok().map(|d| d.path())).collect(),
+        let entries: Vec<DirEntry> = match fs::read_dir(cur_path) {
+            Ok(read) => read.filter_map(Result::ok).collect(),
             Err(e) => {
                 eprintln!("ls: cannot access {}: {}", cur_path, e);
                 continue;
             }
         };
 
+         let mut visible_entries: Vec<(PathBuf, OsString)> = vec![];
+
         if flag_a {
-            entries.push(std::path::Path::new(cur_path).join("."));
-            entries.push(std::path::Path::new(cur_path).join(".."));
+            visible_entries.push((PathBuf::from("."), OsString::from(".")));
+            visible_entries.push((PathBuf::from(".."), OsString::from("..")));
         }
 
-        if flag_l {
-            let mut total: u64 = 0;
-            for entry in entries.iter() {
-                let meta = entry.metadata().unwrap();
-                total += meta.blocks();
+        for entry in entries {
+            let name = entry.file_name();
+            if !flag_a && name.to_string_lossy().starts_with('.') {
+                continue;
             }
-            println!("total {}", total / 2);
+            visible_entries.push((entry.path(), name));
         }
 
         if !flag_f {
-            entries.sort();
+            visible_entries.sort_by_key(|(_, name)| name.clone());
         }
 
-        println!("entries {:?}", entries);
-        for entry in entries {
-            let file_name = entry.file_name().unwrap_or_default();
-            let file_name_str = file_name.to_string_lossy();
+        if flag_l {
+            let total_blocks: u64 = visible_entries
+                .iter()
+                .filter_map(|(path, _)| fs::symlink_metadata(path).ok())
+                .map(|meta| meta.blocks())
+                .sum();
+            println!("total {}", total_blocks / 2);
+        }
 
-            if !flag_a && file_name_str.starts_with('.') {
-                continue;
-            }
-
-            let metadata = match entry.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-
-            let mut name_out = file_name_str.to_string();
-            let username = users::get_user_by_uid(metadata.uid())
-                .and_then(|u| u.name().to_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| metadata.uid().to_string());
-            let groupname = users::get_group_by_gid(metadata.gid())
-                .and_then(|g| g.name().to_str().map(|s| s.to_string()))
-                .unwrap_or_else(|| metadata.gid().to_string());
-            let nlink = metadata.nlink();
-
-            if flag_f {
-                let ft = metadata.file_type();
-                if ft.is_dir() {
-                    name_out.push('/');
-                } else if ft.is_symlink() {
-                    name_out.push('@');
-                } else if metadata.permissions().mode() & 0o111 != 0 {
-                    name_out.push('*');
+        for (path, name) in visible_entries {
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) => {
+                    if flag_l {
+                        print_long_entry(&metadata, name, flag_f);
+                    } else {
+                        let mut name_out = name.to_string_lossy().to_string();
+                        if flag_f {
+                            if metadata.is_dir() {
+                                name_out.push('/');
+                            } else if metadata.file_type().is_symlink() {
+                                name_out.push('@');
+                            } else if metadata.permissions().mode() & 0o111 != 0 {
+                                name_out.push('*');
+                            }
+                        }
+                        print!("{}  ", name_out);
+                    }
                 }
-            }
-
-            if flag_l {
-                let perms = format_permissions(&metadata);
-                let size = metadata.len();
-                let modified = metadata.modified().unwrap();
-                let datetime: chrono::DateTime<Local> = modified.into();
-
-                println!(
-                    "{} {} {} {} {} {} {}",
-                    perms,
-                    nlink,
-                    username,
-                    groupname,
-                    size,
-                    datetime.format("%b %d %H:%M"),
-                    name_out
-                );
-            } else {
-                print!("{}  ", name_out);
+                Err(_) => continue,
             }
         }
 
@@ -114,20 +125,32 @@ pub fn ls(input: &[&str]) {
     }
 }
 
-fn format_permissions(metadata: &Metadata) -> String {
-    let mode = metadata.permissions().mode();
-    let file_type = if metadata.is_dir() { 'd' } else { '-' };
+fn print_long_entry(metadata: &Metadata, name: OsString, flag_f: bool) {
+    let perms = format_permissions(metadata);
+    let nlink = metadata.nlink();
+    let user = get_user_by_uid(metadata.uid())
+        .and_then(|u| u.name().to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| metadata.uid().to_string());
+    let group = get_group_by_gid(metadata.gid())
+        .and_then(|g| g.name().to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| metadata.gid().to_string());
+    let size = metadata.len();
+    let mtime = metadata.modified().unwrap_or(UNIX_EPOCH);
+    let mtime_str = format_time(mtime);
 
-    let mut perms = String::new();
-    perms.push(file_type);
-
-    let flags = ['r', 'w', 'x'];
-    for i in (0..9).rev() {
-        if (mode >> i) & 1 == 1 {
-            perms.push(flags[i % 3]);
-        } else {
-            perms.push('-');
+    let mut name_out = name.to_string_lossy().to_string();
+    if flag_f {
+        if metadata.is_dir() {
+            name_out.push('/');
+        } else if metadata.file_type().is_symlink() {
+            name_out.push('@');
+        } else if metadata.permissions().mode() & 0o111 != 0 {
+            name_out.push('*');
         }
     }
-    perms
+
+    println!(
+        "{} {} {} {} {} {} {}",
+        perms, nlink, user, group, size, mtime_str, name_out
+    );
 }
