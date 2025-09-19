@@ -5,8 +5,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, FileTypeExt};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use users::{get_group_by_gid, get_user_by_uid};
+use posix_acl::PosixACL;
 
-fn format_permissions(metadata: &Metadata) -> String {
+fn format_permissions(metadata: &Metadata, path: &PathBuf) -> String {
     let mode = metadata.permissions().mode();
     let file_type = if metadata.is_dir() {
         'd'
@@ -35,6 +36,11 @@ fn format_permissions(metadata: &Metadata) -> String {
             perms.push('-');
         }
     }
+    if let Ok(Some(acl)) = PosixACL::read_acl(path, posix_acl::ACL_TYPE_ACCESS) {
+    if acl.entries().len() > 3 {
+        perms.push('+');
+    }
+}
     perms
 }
 
@@ -43,8 +49,21 @@ fn format_time(mtime: SystemTime) -> String {
     datetime.format("%b %e %H:%M").to_string()
 }
 
-fn ls_suffix(metadata: &Metadata, _path: &PathBuf) -> char {
-    let ft = metadata.file_type();
+fn ls_suffix(metadata: &Metadata, path: &PathBuf, check: bool) -> char {
+    let target_metadata = if metadata.file_type().is_symlink() {
+        fs::metadata(path).ok()
+    } else {
+        None
+    };
+
+    let meta = target_metadata.as_ref().unwrap_or(metadata);
+
+    let ft;
+    if check {
+        ft = meta.file_type();
+    } else {
+        ft = metadata.file_type();
+    }
     if ft.is_dir() {
         '/'
     } else if ft.is_symlink() {
@@ -53,7 +72,7 @@ fn ls_suffix(metadata: &Metadata, _path: &PathBuf) -> char {
         '|'
     } else if ft.is_socket() {
         '='
-    } else if metadata.permissions().mode() & 0o111 != 0 {
+    } else if meta.permissions().mode() & 0o111 != 0 {
         '*'
     } else {
         '\0'
@@ -120,7 +139,7 @@ pub fn ls(input: &[&str]) {
             visible_entries.push((entry.path(), name));
         }
 
-        visible_entries.sort_by_key(|(_, name)| name.clone());
+        visible_entries.sort();
         
         if flag_l {
             let total_blocks: u64 = visible_entries
@@ -135,7 +154,7 @@ pub fn ls(input: &[&str]) {
             for (path, name) in &visible_entries {
                 match fs::symlink_metadata(path) {
                     Ok(metadata) => {
-                        let perms = format_permissions(&metadata);
+                        let perms = format_permissions(&metadata, path);
                         let nlink = metadata.nlink();
                         let user = get_user_by_uid(metadata.uid())
                             .and_then(|u| u.name().to_str().map(|s| s.to_string()))
@@ -155,7 +174,7 @@ pub fn ls(input: &[&str]) {
                             }
                         }
                         if flag_f {
-                            let suffix = ls_suffix(&metadata, path);
+                            let suffix = ls_suffix(&metadata, path, true);
                             if suffix != '\0' {
                                 name_out.push(suffix);
                             }
@@ -189,22 +208,39 @@ pub fn ls(input: &[&str]) {
 
             for e in entries_info {
                 if let Some(target) = e.symlink_target {
-                    println!(
-                        "{:<perms_width$} {:>nlink_width$} {:<user_width$} {:<group_width$} {:>size_width$} {} {} -> {}",
-                        e.perms,
-                        e.nlink,
-                        e.user,
-                        e.group,
-                        e.size,
-                        e.mtime_str,
-                        e.name,
-                        target,
-                        perms_width = perms_width,
-                        nlink_width = nlink_width,
-                        user_width = user_width,
-                        group_width = group_width,
-                        size_width = size_width,
-                    );
+                    let target_path = PathBuf::from(&target);
+                    let target_meta = fs::metadata(&target_path).ok();
+                    let suffix = target_meta
+                        .as_ref()
+                        .map(|m| ls_suffix(m, &target_path, true))
+                        .filter(|&c| c != '\0')
+                        .unwrap_or('\0');
+                    if suffix != '\0' {
+                        println!(
+                            "{:<perms_width$} {:>nlink_width$} {:<user_width$} {:<group_width$} {:>size_width$} {} {} -> {}{}",
+                            e.perms,
+                            e.nlink,
+                            e.user,
+                            e.group,
+                            e.size,
+                            e.mtime_str,
+                            e.name,
+                            target,
+                            suffix,
+                        );
+                    } else {
+                        println!(
+                            "{:<perms_width$} {:>nlink_width$} {:<user_width$} {:<group_width$} {:>size_width$} {} {} -> {}",
+                            e.perms,
+                            e.nlink,
+                            e.user,
+                            e.group,
+                            e.size,
+                            e.mtime_str,
+                            e.name,
+                            target,
+                        );
+                    }
                 } else {
                     println!(
                         "{:<perms_width$} {:>nlink_width$} {:<user_width$} {:<group_width$} {:>size_width$} {} {}",
@@ -215,11 +251,6 @@ pub fn ls(input: &[&str]) {
                         e.size,
                         e.mtime_str,
                         e.name,
-                        perms_width = perms_width,
-                        nlink_width = nlink_width,
-                        user_width = user_width,
-                        group_width = group_width,
-                        size_width = size_width,
                     );
                 }
             }
@@ -229,7 +260,7 @@ pub fn ls(input: &[&str]) {
                     Ok(metadata) => {
                         let mut name_out = name.to_string_lossy().to_string();
                         if flag_f {
-                            let suffix = ls_suffix(&metadata, path);
+                            let suffix = ls_suffix(&metadata, path, false);
                             if suffix != '\0' {
                                 name_out.push(suffix);
                             }
