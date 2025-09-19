@@ -19,7 +19,7 @@ fn format_permissions(metadata: &Metadata) -> String {
     let mut perms = String::new();
     perms.push(file_type);
 
-    let flags = ['r', 'w', 'x'];
+    let flags = ['x', 'w', 'r'];
     for i in (0..9).rev() {
         if (mode >> i) & 1 == 1 {
             perms.push(flags[i % 3]);
@@ -33,6 +33,16 @@ fn format_permissions(metadata: &Metadata) -> String {
 fn format_time(mtime: SystemTime) -> String {
     let datetime: DateTime<Local> = DateTime::from(mtime);
     datetime.format("%b %e %H:%M").to_string()
+}
+
+struct LsEntry {
+    perms: String,
+    nlink: usize,
+    user: String,
+    group: String,
+    size: u64,
+    mtime_str: String,
+    name: String,
 }
 
 pub fn ls(input: &[&str]) {
@@ -55,7 +65,6 @@ pub fn ls(input: &[&str]) {
         desired_paths.push(".");
     }
 
-    
     for cur_path in &desired_paths {
         if desired_paths.len() > 1 {
             println!("{}:", cur_path);
@@ -69,7 +78,7 @@ pub fn ls(input: &[&str]) {
             }
         };
 
-         let mut visible_entries: Vec<(PathBuf, OsString)> = vec![];
+        let mut visible_entries: Vec<(PathBuf, OsString)> = vec![];
 
         if flag_a {
             visible_entries.push((PathBuf::from("."), OsString::from(".")));
@@ -95,14 +104,76 @@ pub fn ls(input: &[&str]) {
                 .map(|meta| meta.blocks())
                 .sum();
             println!("total {}", total_blocks / 2);
-        }
 
-        for (path, name) in visible_entries {
-            match fs::symlink_metadata(&path) {
-                Ok(metadata) => {
-                    if flag_l {
-                        print_long_entry(&metadata, name, flag_f);
-                    } else {
+            let mut entries_info = Vec::new();
+
+            for (path, name) in visible_entries {
+                if let Ok(metadata) = fs::symlink_metadata(&path) {
+                    let perms = format_permissions(&metadata);
+                    let nlink = metadata.nlink();
+                    let user = get_user_by_uid(metadata.uid())
+                        .and_then(|u| u.name().to_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| metadata.uid().to_string());
+                    let group = get_group_by_gid(metadata.gid())
+                        .and_then(|g| g.name().to_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| metadata.gid().to_string());
+                    let size = metadata.len();
+                    let mtime = metadata.modified().unwrap_or(UNIX_EPOCH);
+                    let mtime_str = format_time(mtime);
+
+                    let mut name_out = name.to_string_lossy().to_string();
+                    if flag_f {
+                        if metadata.is_dir() {
+                            name_out.push('/');
+                        } else if metadata.file_type().is_symlink() {
+                            name_out.push('@');
+                        } else if metadata.permissions().mode() & 0o111 != 0 {
+                            name_out.push('*');
+                        }
+                    }
+                    if name_out.contains(' ') {
+                        name_out = format!("'{}'", name_out);
+                    }
+
+                    entries_info.push(LsEntry {
+                        perms,
+                        nlink: nlink.try_into().unwrap(),
+                        user,
+                        group,
+                        size,
+                        mtime_str,
+                        name: name_out,
+                    });
+                }
+            }
+
+            let perms_width = entries_info.iter().map(|e| e.perms.len()).max().unwrap_or(0);
+            let nlink_width = entries_info.iter().map(|e| e.nlink.to_string().len()).max().unwrap_or(0);
+            let user_width = entries_info.iter().map(|e| e.user.len()).max().unwrap_or(0);
+            let group_width = entries_info.iter().map(|e| e.group.len()).max().unwrap_or(0);
+            let size_width = entries_info.iter().map(|e| e.size.to_string().len()).max().unwrap_or(0);
+
+            for e in entries_info {
+                println!(
+                    "{:<perms_width$} {:>nlink_width$} {:<user_width$} {:<group_width$} {:>size_width$} {} {}",
+                    e.perms,
+                    e.nlink,
+                    e.user,
+                    e.group,
+                    e.size,
+                    e.mtime_str,
+                    e.name,
+                    perms_width = perms_width,
+                    nlink_width = nlink_width,
+                    user_width = user_width,
+                    group_width = group_width,
+                    size_width = size_width,
+                );
+            }
+        } else {
+            for (path, name) in visible_entries {
+                match fs::symlink_metadata(&path) {
+                    Ok(metadata) => {
                         let mut name_out = name.to_string_lossy().to_string();
                         if flag_f {
                             if metadata.is_dir() {
@@ -115,43 +186,10 @@ pub fn ls(input: &[&str]) {
                         }
                         print!("{}  ", name_out);
                     }
+                    Err(_) => continue,
                 }
-                Err(_) => continue,
             }
-        }
-
-        if !flag_l {
             println!();
         }
     }
-}
-
-fn print_long_entry(metadata: &Metadata, name: OsString, flag_f: bool) {
-    let perms = format_permissions(metadata);
-    let nlink = metadata.nlink();
-    let user = get_user_by_uid(metadata.uid())
-        .and_then(|u| u.name().to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| metadata.uid().to_string());
-    let group = get_group_by_gid(metadata.gid())
-        .and_then(|g| g.name().to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| metadata.gid().to_string());
-    let size = metadata.len();
-    let mtime = metadata.modified().unwrap_or(UNIX_EPOCH);
-    let mtime_str = format_time(mtime);
-
-    let mut name_out = name.to_string_lossy().to_string();
-    if flag_f {
-        if metadata.is_dir() {
-            name_out.push('/');
-        } else if metadata.file_type().is_symlink() {
-            name_out.push('@');
-        } else if metadata.permissions().mode() & 0o111 != 0 {
-            name_out.push('*');
-        }
-    }
-
-    println!(
-        "{} {} {} {} {} {} {}",
-        perms, nlink, user, group, size, mtime_str, name_out
-    );
 }
