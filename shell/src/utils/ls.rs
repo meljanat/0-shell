@@ -19,7 +19,6 @@ fn has_extended_acl(path: &PathBuf) -> bool {
 
 fn format_permissions(metadata: &Metadata, path: &PathBuf) -> String {
     let mode = metadata.permissions().mode();
-    println!("{}", mode);
     let file_type = if metadata.is_dir() {
         'd'
     } else if metadata.file_type().is_symlink() {
