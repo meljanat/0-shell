@@ -73,7 +73,7 @@ fn normal(input: &str, qt: char) -> bool {
     quote == ' '
 }
 
-fn skip_quotes(input: &str) -> String {
+pub fn skip_quotes(input: &str) -> String {
     let mut result = String::new();
     let mut quote: char = ' ';
     for (i, c) in input.chars().enumerate() {

@@ -12,7 +12,7 @@ fn main() {
             println!("\nexit");
             break;
         }
-        let input = input.trim();
+        let input = skip_quotes(&input.trim());
 
         let args = input.split_whitespace().collect::<Vec<&str>>();
         if args.is_empty() {
@@ -34,7 +34,7 @@ fn main() {
             "exit" => {
                 print!("exit\n");
                 break;
-            },
+            }
             _ => println!("Command '{}' not found", cmd),
         }
     }
