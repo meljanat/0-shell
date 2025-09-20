@@ -1,14 +1,25 @@
 use chrono::{DateTime, Local};
 use std::ffi::OsString;
+use std::fs::File;
 use std::fs::{self, DirEntry, Metadata, read_link};
-use std::os::unix::fs::{MetadataExt, PermissionsExt, FileTypeExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use users::{get_group_by_gid, get_user_by_uid};
-use posix_acl::PosixACL;
+use xattr::FileExt;
+
+fn has_extended_acl(path: &PathBuf) -> bool {
+    if let Ok(file) = File::open(path) {
+        if let Ok(attrs) = file.list_xattr() {
+            return attrs.into_iter().any(|a| a == "system.posix_acl_access");
+        }
+    }
+    false
+}
 
 fn format_permissions(metadata: &Metadata, path: &PathBuf) -> String {
     let mode = metadata.permissions().mode();
+    println!("{}", mode);
     let file_type = if metadata.is_dir() {
         'd'
     } else if metadata.file_type().is_symlink() {
@@ -36,11 +47,9 @@ fn format_permissions(metadata: &Metadata, path: &PathBuf) -> String {
             perms.push('-');
         }
     }
-    if let Ok(Some(acl)) = PosixACL::read_acl(path, posix_acl::ACL_TYPE_ACCESS) {
-    if acl.entries().len() > 3 {
+    if has_extended_acl(path) {
         perms.push('+');
     }
-}
     perms
 }
 
@@ -49,7 +58,7 @@ fn format_time(mtime: SystemTime) -> String {
     datetime.format("%b %e %H:%M").to_string()
 }
 
-fn ls_suffix(metadata: &Metadata, path: &PathBuf, check: bool) -> char {
+fn ls_suffix(metadata: &Metadata, path: &PathBuf) -> char {
     let target_metadata = if metadata.file_type().is_symlink() {
         fs::metadata(path).ok()
     } else {
@@ -59,11 +68,8 @@ fn ls_suffix(metadata: &Metadata, path: &PathBuf, check: bool) -> char {
     let meta = target_metadata.as_ref().unwrap_or(metadata);
 
     let ft;
-    if check {
-        ft = meta.file_type();
-    } else {
-        ft = metadata.file_type();
-    }
+    ft = meta.file_type();
+   
     if ft.is_dir() {
         '/'
     } else if ft.is_symlink() {
@@ -110,11 +116,7 @@ pub fn ls(input: &[&str]) {
         desired_paths.push(".");
     }
 
-    for (i, cur_path) in desired_paths.iter().enumerate() {
-        if desired_paths.len() > 1 {
-            if i > 0 { println!(); }
-            println!("{}:", cur_path);
-        }
+    for cur_path in desired_paths.iter() {
 
         let entries: Vec<DirEntry> = match fs::read_dir(cur_path) {
             Ok(read) => read.filter_map(Result::ok).collect(),
@@ -140,7 +142,7 @@ pub fn ls(input: &[&str]) {
         }
 
         visible_entries.sort();
-        
+
         if flag_l {
             let total_blocks: u64 = visible_entries
                 .iter()
@@ -174,12 +176,12 @@ pub fn ls(input: &[&str]) {
                             }
                         }
                         if flag_f {
-                            let suffix = ls_suffix(&metadata, path, true);
+                            let suffix = ls_suffix(&metadata, path);
                             if suffix != '\0' {
                                 name_out.push(suffix);
                             }
                         }
-                        if name_out.contains(' ') {
+                        if name_out.chars().any(|c| c.is_whitespace()) {
                             name_out = format!("'{}'", name_out);
                         }
 
@@ -200,11 +202,27 @@ pub fn ls(input: &[&str]) {
                 }
             }
 
-            let perms_width = entries_info.iter().map(|e| e.perms.len()).max().unwrap_or(0);
-            let nlink_width = entries_info.iter().map(|e| e.nlink.to_string().len()).max().unwrap_or(0);
+            let perms_width = entries_info
+                .iter()
+                .map(|e| e.perms.len())
+                .max()
+                .unwrap_or(0);
+            let nlink_width = entries_info
+                .iter()
+                .map(|e| e.nlink.to_string().len())
+                .max()
+                .unwrap_or(0);
             let user_width = entries_info.iter().map(|e| e.user.len()).max().unwrap_or(0);
-            let group_width = entries_info.iter().map(|e| e.group.len()).max().unwrap_or(0);
-            let size_width = entries_info.iter().map(|e| e.size.to_string().len()).max().unwrap_or(0);
+            let group_width = entries_info
+                .iter()
+                .map(|e| e.group.len())
+                .max()
+                .unwrap_or(0);
+            let size_width = entries_info
+                .iter()
+                .map(|e| e.size.to_string().len())
+                .max()
+                .unwrap_or(0);
 
             for e in entries_info {
                 if let Some(target) = e.symlink_target {
@@ -212,7 +230,7 @@ pub fn ls(input: &[&str]) {
                     let target_meta = fs::metadata(&target_path).ok();
                     let suffix = target_meta
                         .as_ref()
-                        .map(|m| ls_suffix(m, &target_path, true))
+                        .map(|m| ls_suffix(m, &target_path))
                         .filter(|&c| c != '\0')
                         .unwrap_or('\0');
                     if suffix != '\0' {
@@ -231,26 +249,13 @@ pub fn ls(input: &[&str]) {
                     } else {
                         println!(
                             "{:<perms_width$} {:>nlink_width$} {:<user_width$} {:<group_width$} {:>size_width$} {} {} -> {}",
-                            e.perms,
-                            e.nlink,
-                            e.user,
-                            e.group,
-                            e.size,
-                            e.mtime_str,
-                            e.name,
-                            target,
+                            e.perms, e.nlink, e.user, e.group, e.size, e.mtime_str, e.name, target,
                         );
                     }
                 } else {
                     println!(
                         "{:<perms_width$} {:>nlink_width$} {:<user_width$} {:<group_width$} {:>size_width$} {} {}",
-                        e.perms,
-                        e.nlink,
-                        e.user,
-                        e.group,
-                        e.size,
-                        e.mtime_str,
-                        e.name,
+                        e.perms, e.nlink, e.user, e.group, e.size, e.mtime_str, e.name,
                     );
                 }
             }
@@ -260,12 +265,12 @@ pub fn ls(input: &[&str]) {
                     Ok(metadata) => {
                         let mut name_out = name.to_string_lossy().to_string();
                         if flag_f {
-                            let suffix = ls_suffix(&metadata, path, false);
+                            let suffix = ls_suffix(&metadata, path);
                             if suffix != '\0' {
                                 name_out.push(suffix);
                             }
                         }
-                        print!("{}  ", name_out);
+                        print!("{:>10}  ", name_out);
                     }
                     Err(e) => {
                         eprint!("ls: cannot access {}: {}  ", name.to_string_lossy(), e);
