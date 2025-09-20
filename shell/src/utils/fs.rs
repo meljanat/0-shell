@@ -56,12 +56,34 @@ pub fn mv(input: &[&str]) {
     }
 
     let dest = input.last().unwrap();
+    let dest_metadata = std::fs::metadata(dest);
     let sources = &input[..input.len() - 1];
 
-    for &src in sources {
-        let result = std::fs::rename(src, dest);
-        if let Err(e) = result {
-            eprintln!("mv: cannot move '{}': {}", src, e);
+    if sources.len() == 1 {
+        let src = sources[0];
+        let pure_name = src.split('/').last().unwrap_or(src);
+        if dest_metadata.is_ok() && dest_metadata.unwrap().is_dir() {
+            let result = std::fs::rename(src, format!("{}/{}", dest, pure_name));
+            if let Err(e) = result {
+                eprintln!("mv: cannot move '{}': {}", src, e);
+            }
+        } else {
+            let result = std::fs::rename(src, dest);
+            if let Err(e) = result {
+                eprintln!("mv: cannot rename '{}': {}", src, e);
+            }
+        }
+    } else {
+        if dest_metadata.is_ok() && !dest_metadata.unwrap().is_dir() {
+            eprintln!("mv: target '{}' is not a directory", dest);
+            return;
+        }
+        for &src in sources {
+            let pure_name = src.split('/').last().unwrap_or(src);
+            let result = std::fs::rename(src, format!("{}/{}", dest, pure_name));
+            if let Err(e) = result {
+                eprintln!("mv: cannot move '{}': {}", src, e);
+            }
         }
     }
 }
